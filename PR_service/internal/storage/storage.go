@@ -517,3 +517,7 @@ func (s *StorageData) GetTeam(ctx context.Context, teamName string) (*models.Tea
 
 	return team, nil
 }
+
+func PickForTest(arr []string, n int) []string {
+	return pickRandomDistinct(arr, n)
+}

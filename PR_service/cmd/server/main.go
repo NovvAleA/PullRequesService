@@ -35,6 +35,8 @@ func main() {
 	h := api.NewHandler(st)
 
 	r := mux.NewRouter()
+	r.Use(api.TimeoutMiddleware) //устанавливаю таймауты
+	
 	r.HandleFunc("/team/add", h.AddTeam).Methods("POST")
 	r.HandleFunc("/team/get", h.GetTeam).Methods("GET") //
 
@@ -44,7 +46,7 @@ func main() {
 	r.HandleFunc("/pullRequest/create", h.CreatePR).Methods("POST")
 	r.HandleFunc("/pullRequest/merge", h.MergePR).Methods("POST")
 	r.HandleFunc("/pullRequest/reassign", h.ReassignReviewer).Methods("POST")
-	
+
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))

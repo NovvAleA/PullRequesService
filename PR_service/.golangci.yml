@@ -1,0 +1,65 @@
+version: "2"
+run:
+  timeout: 5m
+  modules-download-mode: vendor
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+linters:
+  disable-all: true
+  enable:
+    # Основные линтеры
+    - gofmt
+    - goimports
+    - govet
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+
+    # Стиль кода
+    - gocritic
+    - revive
+    - stylecheck
+
+    # Ошибки
+    - errcheck
+    - gosec
+
+    # Производительность
+    - prealloc
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - experimental
+    disabled-checks:
+      - hugeParam # иногда большие параметры оправданы
+
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+        arguments:
+          - checkPrivateReceivers
+
+  gosec:
+    excludes:
+      - G104 # errors unhandled - иногда это нормально
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+
+  max-issues-per-linter: 0
+  max-same-issues: 0
