@@ -1,16 +1,30 @@
-FROM golang:1.21-alpine AS builder
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go env -w GOPROXY=https://proxy.golang.org
-RUN go mod download
-COPY . .
-WORKDIR /src/cmd/server
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app/pr-reviewer
+FROM golang:1.25-alpine AS builder
 
-FROM alpine:3.18
-RUN apk add --no-cache ca-certificates
-COPY --from=builder /app/pr-reviewer /app/pr-reviewer
 WORKDIR /app
-EXPOSE 8080
-ENTRYPOINT ["/app/pr-reviewer"]
 
+# Копируем файлы модулей
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Копируем исходный код
+COPY . .
+
+# Собираем приложение
+RUN CGO_ENABLED=0 GOOS=linux go build -o /server ./cmd/server
+
+# Финальный образ
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+# Копируем бинарник
+COPY --from=builder /server .
+
+# Копируем OpenAPI спецификацию
+COPY openapi.yml .
+
+EXPOSE 8080
+
+CMD ["./server"]

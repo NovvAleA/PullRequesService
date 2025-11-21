@@ -9,25 +9,23 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - pr-network
-    container_name: db  # ← Явно задаем имя контейнера
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pguser -d pr_reviewer_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   app:
-    build: .
+    image: novvalea/pr-reviewer-service:latest
+    #build: .
     ports:
       - "8080:8080"
     environment:
       DATABASE_URL: "postgres://pguser:password@db:5432/pr_reviewer_db?sslmode=disable"
+      PORT: "8080"
     depends_on:
-      - db
-    networks:
-      - pr-network
-
-networks:
-  pr-network:
-    driver: bridge
-    name: pr-reviewer-network
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:

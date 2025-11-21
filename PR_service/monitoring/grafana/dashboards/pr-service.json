@@ -1,0 +1,35 @@
+{
+  "dashboard": {
+    "title": "PR Service Metrics",
+    "panels": [
+      {
+        "title": "HTTP Requests Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(pr_service_http_requests_total[5m])",
+            "legendFormat": "{{method}} {{path}} {{status}}"
+          }
+        ]
+      },
+      {
+        "title": "PR Creation Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(pr_service_pr_created_total[5m])"
+          }
+        ]
+      },
+      {
+        "title": "Database Query Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "pr_service_db_query_duration_seconds"
+          }
+        ]
+      }
+    ]
+  }
+}

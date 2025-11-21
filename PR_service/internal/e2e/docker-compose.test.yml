@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  test-db:
+    image: postgres:13
+    container_name: pr-reviewer-test-db
+    environment:
+      POSTGRES_USER: pguser
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pr_reviewer_test
+    ports:
+      - "5433:5433"  # Явно указываем порт 5433 и внутри и снаружи
+    command: ["postgres", "-p", "5433"]  # Запускаем PostgreSQL на порту 5433 внутри контейнера
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pguser -d pr_reviewer_test -p 5433"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
