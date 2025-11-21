@@ -30,7 +30,7 @@ func NewHandler(s *storage.StorageData) *Handler {
 }
 
 func (h *Handler) AddTeam(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	var t models.Team
 	if !h.bindJSON(w, r, &t) {
@@ -52,14 +52,14 @@ func (h *Handler) AddTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Метрики для команды
-	//h.metrics.SetTeamMembersCount(t.TeamName, len(t.Members))
-	//h.metrics.ObserveDBQuery("upsert", "teams", time.Since(start))
+	h.metrics.SetTeamMembersCount(t.TeamName, len(t.Members))
+	h.metrics.ObserveDBQuery("upsert", "teams", time.Since(start))
 
 	writeSuccess(w, http.StatusCreated, "team created")
 }
 
 func (h *Handler) GetTeam(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	teamName := r.URL.Query().Get("team_name")
 	if teamName == "" {
@@ -75,13 +75,13 @@ func (h *Handler) GetTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//h.metrics.ObserveDBQuery("select", "teams", time.Since(start))
+	h.metrics.ObserveDBQuery("select", "teams", time.Since(start))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"team": team})
 }
 
 func (h *Handler) SetIsActive(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	var req models.SetActiveRequest
 	if !h.bindJSON(w, r, &req) {
@@ -102,13 +102,13 @@ func (h *Handler) SetIsActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//h.metrics.ObserveDBQuery("update", "users", time.Since(start))
+	h.metrics.ObserveDBQuery("update", "users", time.Since(start))
 
 	writeSuccess(w, http.StatusOK, "user updated")
 }
 
 func (h *Handler) CreatePR(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	var req models.CreatePRRequest
 	if !h.bindJSON(w, r, &req) {
@@ -133,15 +133,15 @@ func (h *Handler) CreatePR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Бизнес-метрики
-	//h.metrics.IncPRCreated()
-	//h.metrics.ObserveReviewersAssigned("unknown", len(createdPR.Reviewers))
-	//h.metrics.ObserveDBQuery("create", "pull_requests", time.Since(start))
+	h.metrics.IncPRCreated()
+	h.metrics.ObserveReviewersAssigned("unknown", len(createdPR.Reviewers))
+	h.metrics.ObserveDBQuery("create", "pull_requests", time.Since(start))
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"pr": createdPR})
 }
 
 func (h *Handler) MergePR(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	var req struct {
 		PullRequestID string `json:"pull_request_id"`
@@ -165,14 +165,14 @@ func (h *Handler) MergePR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Бизнес-метрики
-	//h.metrics.IncPRMerged()
-	//h.metrics.ObserveDBQuery("update", "pull_requests", time.Since(start))
+	h.metrics.IncPRMerged()
+	h.metrics.ObserveDBQuery("update", "pull_requests", time.Since(start))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"pr": mergedPR})
 }
 
 func (h *Handler) ReassignReviewer(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	var req struct {
 		PullRequestID string `json:"pull_request_id"`
@@ -200,8 +200,8 @@ func (h *Handler) ReassignReviewer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Метрики для переназначения
-	//h.metrics.ObserveReviewersAssigned("unknown", len(updatedPR.Reviewers))
-	//h.metrics.ObserveDBQuery("update", "pr_reviewers", time.Since(start))
+	h.metrics.ObserveReviewersAssigned("unknown", len(updatedPR.Reviewers))
+	h.metrics.ObserveDBQuery("update", "pr_reviewers", time.Since(start))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"pr":          updatedPR,
@@ -210,7 +210,7 @@ func (h *Handler) ReassignReviewer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetPRsForUser(w http.ResponseWriter, r *http.Request) {
-	//start := time.Now()
+	start := time.Now()
 
 	uid := r.URL.Query().Get("user_id")
 	if uid == "" {
@@ -227,7 +227,7 @@ func (h *Handler) GetPRsForUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//h.metrics.ObserveDBQuery("select", "pull_requests", time.Since(start))
+	h.metrics.ObserveDBQuery("select", "pull_requests", time.Since(start))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"user_id":       uid,

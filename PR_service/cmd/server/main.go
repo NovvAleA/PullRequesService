@@ -49,10 +49,7 @@ func startServer() {
 
 	r := mux.NewRouter()
 
-	// Регистрируем middleware метрик ПЕРВЫМ
-	//r.Use(h.Metrics().MetricsMiddleware)
-
-	// Маршрут для метрик Prometheus
+	r.Use(h.Metrics().MetricsMiddleware)
 	r.Handle("/metrics", h.Metrics().InstrumentedHandler()).Methods("GET")
 
 	// Остальные маршруты

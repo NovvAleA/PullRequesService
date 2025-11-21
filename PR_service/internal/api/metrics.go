@@ -15,6 +15,9 @@ type Metrics struct {
 	httpRequestDuration *prometheus.HistogramVec
 	prCreatedTotal      prometheus.Counter
 	prMergedTotal       prometheus.Counter
+	prReviewersAssigned *prometheus.HistogramVec
+	teamMembersCount    *prometheus.GaugeVec
+	dbQueryDuration     *prometheus.HistogramVec
 }
 
 func NewMetrics() *Metrics {
@@ -55,13 +58,47 @@ func NewMetrics() *Metrics {
 				Help:      "Total number of merged pull requests",
 			},
 		),
+
+		prReviewersAssigned: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Name:      "pr_reviewers_assigned",
+				Help:      "Number of reviewers assigned to PR",
+				Buckets:   []float64{0, 1, 2},
+			},
+			[]string{"team"},
+		),
+
+		teamMembersCount: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "team_members_count",
+				Help:      "Number of members in teams",
+			},
+			[]string{"team_name"},
+		),
+
+		dbQueryDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Name:      "db_query_duration_seconds",
+				Help:      "Database query duration in seconds",
+				Buckets:   prometheus.DefBuckets,
+			},
+			[]string{"operation", "table"},
+		),
 	}
 
-	// Регистрируем только основные метрики
-	prometheus.MustRegister(m.httpRequestsTotal)
-	prometheus.MustRegister(m.httpRequestDuration)
-	prometheus.MustRegister(m.prCreatedTotal)
-	prometheus.MustRegister(m.prMergedTotal)
+	// Регистрируем все метрики
+	prometheus.MustRegister(
+		m.httpRequestsTotal,
+		m.httpRequestDuration,
+		m.prCreatedTotal,
+		m.prMergedTotal,
+		m.prReviewersAssigned,
+		m.teamMembersCount,
+		m.dbQueryDuration,
+	)
 
 	return m
 }
@@ -76,9 +113,13 @@ func (m *Metrics) MetricsMiddleware(next http.Handler) http.Handler {
 		duration := time.Since(start).Seconds()
 		status := strconv.Itoa(rw.statusCode)
 
-		// Только базовые метрики
-		m.httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, status).Inc()
-		m.httpRequestDuration.WithLabelValues(r.Method, r.URL.Path, status).Observe(duration)
+		// Безопасно собираем метрики
+		if m.httpRequestsTotal != nil {
+			m.httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, status).Inc()
+		}
+		if m.httpRequestDuration != nil {
+			m.httpRequestDuration.WithLabelValues(r.Method, r.URL.Path, status).Observe(duration)
+		}
 
 		log.Printf("METRIC: %s %s %s - %.3fs", r.Method, r.URL.Path, status, duration)
 	})
@@ -105,27 +146,33 @@ func (m *Metrics) InstrumentedHandler() http.Handler {
 	return promhttp.Handler()
 }
 
+// Безопасные методы с проверкой на nil
 func (m *Metrics) IncPRCreated() {
-	m.prCreatedTotal.Inc()
+	if m.prCreatedTotal != nil {
+		m.prCreatedTotal.Inc()
+	}
 }
 
 func (m *Metrics) IncPRMerged() {
-	m.prMergedTotal.Inc()
+	if m.prMergedTotal != nil {
+		m.prMergedTotal.Inc()
+	}
 }
 
-// Упрощенные методы - убрали сложные метрики
 func (m *Metrics) ObserveReviewersAssigned(team string, reviewers int) {
-	// Пока ничего не делаем
+	if m.prReviewersAssigned != nil {
+		m.prReviewersAssigned.WithLabelValues(team).Observe(float64(reviewers))
+	}
 }
 
 func (m *Metrics) SetTeamMembersCount(teamName string, count int) {
-	// Пока ничего не делаем
+	if m.teamMembersCount != nil {
+		m.teamMembersCount.WithLabelValues(teamName).Set(float64(count))
+	}
 }
 
 func (m *Metrics) ObserveDBQuery(operation, table string, duration time.Duration) {
-	// Пока ничего не делаем
-}
-
-func (m *Metrics) SetDBConnections(count int) {
-	// Пока ничего не делаем
+	if m.dbQueryDuration != nil {
+		m.dbQueryDuration.WithLabelValues(operation, table).Observe(duration.Seconds())
+	}
 }

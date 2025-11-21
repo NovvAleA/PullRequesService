@@ -18,7 +18,6 @@ type StorageData struct {
 
 type MetricsInterface interface {
 	ObserveDBQuery(operation, table string, duration time.Duration)
-	SetDBConnections(count int)
 }
 
 func NewStorage(db *sql.DB) *StorageData {
