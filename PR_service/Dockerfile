@@ -9,7 +9,7 @@ RUN go mod download
 # Копируем ВСЕ исходные файлы
 COPY . .
 
-# Собираем приложение из правильного пути
+# Собираем приложение
 RUN CGO_ENABLED=0 GOOS=linux go build -o pr_service ./cmd/server/main.go
 
 # Финальный образ

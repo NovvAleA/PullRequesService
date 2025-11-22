@@ -10,3 +10,5 @@ coverage.out
 coverage.html
 *.test
 .env
+.vscode/
+.idea/
