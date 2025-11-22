@@ -10,62 +10,83 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
-	_ "github.com/jackc/pgx/v5/stdlib"
-
 	"PR_service/internal/api"
 	"PR_service/internal/storage"
+
+	"github.com/gorilla/mux"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
-	startServer()
-}
+	// Конфигурация
+	dbURL := getEnv("DATABASE_URL", "postgres://pguser:password@localhost:5432/pr_reviewer_db?sslmode=disable")
+	port := getEnv("PORT", "8080")
 
-func startServer() {
-	dsn := getDatabaseDSN()
-
-	// Ждем подключения к БД
-	db, err := waitForDB(dsn)
+	// Инициализация БД
+	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
-		log.Fatalf("Database connection failed: %v", err)
+		log.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
 
-	// Настройка пула соединений
-	db.SetMaxOpenConns(20)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxIdleTime(5 * time.Minute)
+	// Проверяем подключение к БД
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// Применяем миграции
-	if err := storage.ApplyMigrations(db); err != nil {
-		log.Fatalf("apply migrations: %v", err)
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	st := storage.NewStorage(db)
-	h := api.NewHandler(st)
+	// Применяем миграции
+	log.Println("Applying database migrations...")
+	if err := storage.ApplyMigrations(db); err != nil {
+		log.Fatalf("Failed to apply migrations: %v", err)
+	}
+	log.Println("Migrations applied successfully")
 
-	// Устанавливаем метрики в storage
-	st.SetMetrics(h.Metrics())
+	// Инициализация storage
+	store := storage.NewStorage(db)
 
-	r := mux.NewRouter()
+	// Инициализация метрик
+	metrics := api.NewMetrics()
 
-	r.Use(h.Metrics().MetricsMiddleware)
-	r.Handle("/metrics", h.Metrics().InstrumentedHandler()).Methods("GET")
+	// Инициализация handler с метриками
+	handler := api.NewHandler(store, metrics)
 
-	// Остальные маршруты
-	r.HandleFunc("/team/add", h.AddTeam).Methods("POST")
-	r.HandleFunc("/team/get", h.GetTeam).Methods("GET")
-	r.HandleFunc("/users/setIsActive", h.SetIsActive).Methods("POST")
-	r.HandleFunc("/users/getReview", h.GetPRsForUser).Methods("GET")
-	r.HandleFunc("/pullRequest/create", h.CreatePR).Methods("POST")
-	r.HandleFunc("/pullRequest/merge", h.MergePR).Methods("POST")
-	r.HandleFunc("/pullRequest/reassign", h.ReassignReviewer).Methods("POST")
-	r.HandleFunc("/health", h.HealthCheck).Methods("GET")
+	// Настройка роутинга
+	router := mux.NewRouter()
 
-	// Создаем HTTP сервер с настройками
-	server := &http.Server{
-		Addr:         ":" + getPort(),
-		Handler:      r,
+	// Middleware
+	router.Use(metrics.MetricsMiddleware) // Метрики HTTP запросов
+	router.Use(api.TimeoutMiddleware)     // Таймауты
+
+	// API routes
+	// Root endpoint
+	router.HandleFunc("/", handler.Root).Methods("GET")
+
+	// Teams endpoints
+	router.HandleFunc("/team/add", handler.AddTeam).Methods("POST")
+	router.HandleFunc("/team/get", handler.GetTeam).Methods("GET")
+
+	// Users endpoints
+	router.HandleFunc("/users/setIsActive", handler.SetIsActive).Methods("POST")
+	router.HandleFunc("/users/getReview", handler.GetPRsForUser).Methods("GET")
+
+	// Pull Requests endpoints
+	router.HandleFunc("/pullRequest/create", handler.CreatePR).Methods("POST")
+	router.HandleFunc("/pullRequest/merge", handler.MergePR).Methods("POST")
+	router.HandleFunc("/pullRequest/reassign", handler.ReassignReviewer).Methods("POST")
+
+	// Health and metrics endpoints
+	router.HandleFunc("/health", handler.HealthCheck).Methods("GET")
+	router.Handle("/metrics", metrics.InstrumentedHandler()).Methods("GET")
+	router.HandleFunc("/metrics/data", handler.MetricsData).Methods("GET")
+
+	// Настройка HTTP сервера
+	srv := &http.Server{
+		//Addr:         ":" + port,
+		Addr:         "0.0.0.0:" + port,
+		Handler:      router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -74,7 +95,7 @@ func startServer() {
 	// Graceful shutdown
 	done := make(chan bool, 1)
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-quit
@@ -83,79 +104,38 @@ func startServer() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := server.Shutdown(ctx); err != nil {
+		srv.SetKeepAlivesEnabled(false)
+		if err := srv.Shutdown(ctx); err != nil {
 			log.Fatalf("Could not gracefully shutdown the server: %v", err)
 		}
 		close(done)
 	}()
 
-	log.Printf("🚀 Server listening on :%s", getPort())
+	log.Printf("Server is running on port %s", port)
+	log.Println("Available endpoints:")
+	log.Println("  GET  /")
+	log.Println("  GET  /health")
+	log.Println("  POST /team/add")
+	log.Println("  GET  /team/get")
+	log.Println("  POST /users/setIsActive")
+	log.Println("  GET  /users/getReview")
+	log.Println("  POST /pullRequest/create")
+	log.Println("  POST /pullRequest/merge")
+	log.Println("  POST /pullRequest/reassign")
+	log.Println("  GET  /metrics")
+	log.Println("  GET  /metrics/data")
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Could not listen on %s: %v", getPort(), err)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Could not listen on port %s: %v", port, err)
 	}
 
 	<-done
 	log.Println("Server stopped")
 }
 
-func getDatabaseDSN() string {
-	// В Docker используем переменную окружения
-	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
-		return dsn
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
-
-	// Для разработки - проверяем оба варианта
-	hosts := []string{"db", "localhost"}
-	for _, host := range hosts {
-		testDSN := "postgres://pguser:password@" + host + ":5432/pr_reviewer_db?sslmode=disable"
-		log.Printf("Trying database at: %s", host)
-
-		db, err := sql.Open("pgx", testDSN)
-		if err != nil {
-			continue
-		}
-
-		if err := db.Ping(); err == nil {
-			db.Close()
-			log.Printf("Connected to database at: %s", host)
-			return testDSN
-		}
-		db.Close()
-	}
-
-	// Fallback
-	return "postgres://pguser:password@localhost:5432/pr_reviewer_db?sslmode=disable"
-}
-
-func waitForDB(dsn string) (*sql.DB, error) {
-	var db *sql.DB
-	var err error
-
-	// Пытаемся подключиться несколько раз
-	for i := 0; i < 10; i++ {
-		db, err = sql.Open("pgx", dsn)
-		if err != nil {
-			log.Printf("Database connection attempt %d failed: %v", i+1, err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		if err = db.Ping(); err == nil {
-			return db, nil
-		}
-
-		log.Printf("Database ping attempt %d failed: %v", i+1, err)
-		db.Close()
-		time.Sleep(2 * time.Second)
-	}
-
-	return nil, err
-}
-
-func getPort() string {
-	if p := os.Getenv("PORT"); p != "" {
-		return p
-	}
-	return "8080"
+	return defaultValue
 }

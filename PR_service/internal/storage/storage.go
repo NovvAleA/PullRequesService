@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE TABLE IF NOT EXISTS users (
   user_id TEXT PRIMARY KEY,
   username TEXT,
+  team_name TEXT, -- Добавлено поле team_name
   is_active BOOLEAN NOT NULL DEFAULT true
 );
 
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   pull_request_name TEXT,
   author_id TEXT REFERENCES users(user_id),
   status TEXT NOT NULL DEFAULT 'OPEN',
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Добавлено поле created_at
   merged_at TIMESTAMP WITH TIME ZONE NULL
 );
 
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS pr_reviewers (
 
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_name);
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active);
+CREATE INDEX IF NOT EXISTS idx_pr_created_at ON pull_requests(created_at); -- Добавлен индекс
 `
 	_, err := db.Exec(ddl)
 	return err
@@ -156,10 +159,11 @@ func (s *StorageData) UpsertTeam(ctx context.Context, t models.Team) error {
 
 	// Upsert users and members:
 	for _, u := range t.Members {
-		// Создает/обновляет пользователя
+		// Создает/обновляет пользователя с team_name
 		if _, err := s.txExecWithMetrics(tx, ctx, "upsert", "users",
-			`INSERT INTO users(user_id, username, is_active) VALUES($1,$2,$3) ON CONFLICT (user_id) DO UPDATE SET username=EXCLUDED.username`,
-			u.UserID, u.Username, u.IsActive); err != nil {
+			`INSERT INTO users(user_id, username, team_name, is_active) VALUES($1,$2,$3,$4) 
+			 ON CONFLICT (user_id) DO UPDATE SET username=EXCLUDED.username, team_name=EXCLUDED.team_name`,
+			u.UserID, u.Username, t.TeamName, u.IsActive); err != nil {
 			return err
 		}
 		// Добавляет в команду (если не состоит)
@@ -218,9 +222,10 @@ func (s *StorageData) CreatePR(ctx context.Context, pr models.CreatePRRequest) (
 		return nil, fmt.Errorf("pr already exists")
 	}
 
-	// Создаем PR
+	// Создаем PR с created_at
 	if _, err := s.txExecWithMetrics(tx, ctx, "insert", "pull_requests",
-		`INSERT INTO pull_requests(pull_request_id, pull_request_name, author_id, status) VALUES($1,$2,$3,'OPEN')`,
+		`INSERT INTO pull_requests(pull_request_id, pull_request_name, author_id, status, created_at) 
+		 VALUES($1,$2,$3,'OPEN', CURRENT_TIMESTAMP)`,
 		pr.PullRequestID, pr.PullRequestName, pr.AuthorID); err != nil {
 		return nil, err
 	}
@@ -262,18 +267,30 @@ func (s *StorageData) CreatePR(ctx context.Context, pr models.CreatePRRequest) (
 		reviewers = append(reviewers, r)
 	}
 
+	// Получаем созданный PR с датами
+	var createdAt time.Time
+	var mergedAt sql.NullTime
+	err = s.txQueryRowWithMetrics(tx, ctx, "select", "pull_requests",
+		`SELECT created_at, merged_at FROM pull_requests WHERE pull_request_id = $1`,
+		pr.PullRequestID).Scan(&createdAt, &mergedAt)
+	if err != nil {
+		return nil, err
+	}
+
 	// Коммитим транзакцию
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	// Возвращаем созданный PR
+	// Возвращаем созданный PR с датами
 	createdPR := &models.PullRequest{
 		PullRequestID:   pr.PullRequestID,
 		PullRequestName: pr.PullRequestName,
 		AuthorID:        pr.AuthorID,
 		Status:          "OPEN",
 		Reviewers:       reviewers,
+		CreatedAt:       createdAt,
+		MergedAt:        nil, // Будет nil пока PR не смержен
 	}
 
 	return createdPR, nil
@@ -288,15 +305,23 @@ func (s *StorageData) MergePR(ctx context.Context, prID string) (*models.PullReq
 
 	// Получаем текущий PR с блокировкой
 	var pr models.PullRequest
+	var createdAt time.Time
+	var mergedAt sql.NullTime
 	err = s.txQueryRowWithMetrics(tx, ctx, "select", "pull_requests",
-		`SELECT pull_request_id, pull_request_name, author_id, status 
+		`SELECT pull_request_id, pull_request_name, author_id, status, created_at, merged_at 
          FROM pull_requests WHERE pull_request_id = $1 FOR UPDATE`,
-		prID).Scan(&pr.PullRequestID, &pr.PullRequestName, &pr.AuthorID, &pr.Status)
+		prID).Scan(&pr.PullRequestID, &pr.PullRequestName, &pr.AuthorID, &pr.Status, &createdAt, &mergedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("pr not found")
 		}
 		return nil, err
+	}
+
+	pr.CreatedAt = createdAt
+	if mergedAt.Valid {
+		mergedAtStr := mergedAt.Time.Format(time.RFC3339)
+		pr.MergedAt = &mergedAtStr
 	}
 
 	// Если уже мерджен - возвращаем текущее состояние
@@ -319,13 +344,27 @@ func (s *StorageData) MergePR(ctx context.Context, prID string) (*models.PullReq
 		return nil, err
 	}
 
+	// Получаем обновленные даты
+	var newMergedAt sql.NullTime
+	err = s.txQueryRowWithMetrics(tx, ctx, "select", "pull_requests",
+		`SELECT merged_at FROM pull_requests WHERE pull_request_id = $1`,
+		prID).Scan(&newMergedAt)
+	if err != nil {
+		return nil, err
+	}
+
 	// Получаем ревьюеров
 	reviewers, err := s.getReviewersForPR(ctx, tx, prID)
 	if err != nil {
 		return nil, err
 	}
+
 	pr.Reviewers = reviewers
 	pr.Status = "MERGED"
+	if newMergedAt.Valid {
+		mergedAtStr := newMergedAt.Time.Format(time.RFC3339)
+		pr.MergedAt = &mergedAtStr
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -366,15 +405,24 @@ func (s *StorageData) ReassignReviewer(ctx context.Context, prID string, oldRevi
 	// Получаем информацию о PR с блокировкой
 	var pr models.PullRequest
 	var authorID string
+	var createdAt time.Time
+	var mergedAt sql.NullTime
+
 	err = s.txQueryRowWithMetrics(tx, ctx, "select", "pull_requests",
-		`SELECT pull_request_id, pull_request_name, author_id, status 
+		`SELECT pull_request_id, pull_request_name, author_id, status, created_at, merged_at 
          FROM pull_requests WHERE pull_request_id = $1 FOR UPDATE`,
-		prID).Scan(&pr.PullRequestID, &pr.PullRequestName, &authorID, &pr.Status)
+		prID).Scan(&pr.PullRequestID, &pr.PullRequestName, &authorID, &pr.Status, &createdAt, &mergedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, "", fmt.Errorf("pr not found")
 		}
 		return nil, "", err
+	}
+
+	pr.CreatedAt = createdAt
+	if mergedAt.Valid {
+		mergedAtStr := mergedAt.Time.Format(time.RFC3339)
+		pr.MergedAt = &mergedAtStr
 	}
 
 	// Проверяем что PR не мерджен
@@ -488,8 +536,8 @@ func (s *StorageData) ReassignReviewer(ctx context.Context, prID string, oldRevi
 	return &pr, replacedBy, nil
 }
 
-// Get PRs where user is reviewer
-func (s *StorageData) GetPRsForUser(ctx context.Context, userID string) ([]models.PullRequest, error) {
+// Get PRs where user is reviewer - возвращает PullRequestShort
+func (s *StorageData) GetPRsForUser(ctx context.Context, userID string) ([]models.PullRequestShort, error) {
 	rows, err := s.queryWithMetrics(ctx, "select", "pull_requests",
 		`SELECT pr.pull_request_id, pr.pull_request_name, pr.author_id, pr.status
         FROM pull_requests pr
@@ -500,29 +548,12 @@ func (s *StorageData) GetPRsForUser(ctx context.Context, userID string) ([]model
 	}
 	defer rows.Close()
 
-	var res []models.PullRequest
+	var res []models.PullRequestShort
 	for rows.Next() {
-		var pr models.PullRequest
+		var pr models.PullRequestShort
 		if err := rows.Scan(&pr.PullRequestID, &pr.PullRequestName, &pr.AuthorID, &pr.Status); err != nil {
 			return nil, err
 		}
-		// fetch reviewers
-		rrows, err := s.queryWithMetrics(ctx, "select", "pr_reviewers",
-			`SELECT user_id FROM pr_reviewers WHERE pull_request_id=$1`, pr.PullRequestID)
-		if err != nil {
-			return nil, err
-		}
-		var revs []string
-		for rrows.Next() {
-			var uid string
-			if err := rrows.Scan(&uid); err != nil {
-				rrows.Close()
-				return nil, err
-			}
-			revs = append(revs, uid)
-		}
-		rrows.Close()
-		pr.Reviewers = revs
 		res = append(res, pr)
 	}
 	if err := rows.Err(); err != nil {
@@ -550,7 +581,7 @@ func (s *StorageData) GetTeam(ctx context.Context, teamName string) (*models.Tea
 		return nil, errors.New("team not found")
 	}
 
-	// Получаем участников команды
+	// Получаем участников команды как TeamMember (без team_name)
 	rows, err := s.txQueryWithMetrics(tx, ctx, "select", "users", `
         SELECT u.user_id, u.username, u.is_active 
         FROM users u
@@ -568,6 +599,7 @@ func (s *StorageData) GetTeam(ctx context.Context, teamName string) (*models.Tea
 		if err := rows.Scan(&user.UserID, &user.Username, &user.IsActive); err != nil {
 			return nil, err
 		}
+		user.TeamName = teamName // Устанавливаем team_name
 		members = append(members, user)
 	}
 
@@ -585,6 +617,17 @@ func (s *StorageData) GetTeam(ctx context.Context, teamName string) (*models.Tea
 	}
 
 	return team, nil
+}
+
+// GetTeamByUserID возвращает команду пользователя
+func (s *StorageData) GetTeamByUserID(ctx context.Context, userID string) (*models.Team, error) {
+	var teamName string
+	err := s.queryRowWithMetrics(ctx, "select", "team_members",
+		`SELECT team_name FROM team_members WHERE user_id = $1 LIMIT 1`, userID).Scan(&teamName)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetTeam(ctx, teamName)
 }
 
 // HealthCheck проверяет доступность базы данных

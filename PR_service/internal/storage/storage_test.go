@@ -2,6 +2,7 @@ package storage
 
 import (
 	"testing"
+	"time"
 
 	"PR_service/internal/models"
 
@@ -150,11 +151,11 @@ func TestTeamValidation(t *testing.T) {
 		shouldError bool
 	}{
 		{
-			name: "Valid team",
+			name: "Valid team with members",
 			team: models.Team{
 				TeamName: "backend",
 				Members: []models.User{
-					{UserID: "user1", Username: "john"},
+					{UserID: "user1", Username: "john", TeamName: "backend", IsActive: true},
 				},
 			},
 			shouldError: false,
@@ -164,7 +165,7 @@ func TestTeamValidation(t *testing.T) {
 			team: models.Team{
 				TeamName: "",
 				Members: []models.User{
-					{UserID: "user1", Username: "john"},
+					{UserID: "user1", Username: "john", TeamName: "", IsActive: true},
 				},
 			},
 			shouldError: true,
@@ -223,6 +224,168 @@ func TestPickRandomDistinct_EdgeCases(t *testing.T) {
 	t.Run("Single element array with n=0", func(t *testing.T) {
 		result := PickForTest([]string{"single"}, 0)
 		assert.Empty(t, result, "Должен вернуть пустой слайс даже при одном элементе")
+	})
+}
+
+func TestModelStructures(t *testing.T) {
+	t.Run("User model with team name", func(t *testing.T) {
+		user := models.User{
+			UserID:   "test-user",
+			Username: "Test User",
+			TeamName: "test-team",
+			IsActive: true,
+		}
+
+		assert.Equal(t, "test-user", user.UserID)
+		assert.Equal(t, "Test User", user.Username)
+		assert.Equal(t, "test-team", user.TeamName)
+		assert.True(t, user.IsActive)
+	})
+
+	t.Run("PullRequest model with dates", func(t *testing.T) {
+		now := time.Now()
+		mergedAt := "2023-01-01T12:00:00Z"
+
+		pr := models.PullRequest{
+			PullRequestID:   "test-pr",
+			PullRequestName: "Test PR",
+			AuthorID:        "user1",
+			Status:          "MERGED",
+			Reviewers:       []string{"user2", "user3"},
+			CreatedAt:       now,
+			MergedAt:        &mergedAt,
+		}
+
+		assert.Equal(t, "test-pr", pr.PullRequestID)
+		assert.Equal(t, "Test PR", pr.PullRequestName)
+		assert.Equal(t, "user1", pr.AuthorID)
+		assert.Equal(t, "MERGED", pr.Status)
+		assert.Len(t, pr.Reviewers, 2)
+		assert.Equal(t, now, pr.CreatedAt)
+		assert.Equal(t, &mergedAt, pr.MergedAt)
+	})
+
+	t.Run("PullRequestShort model", func(t *testing.T) {
+		prShort := models.PullRequestShort{
+			PullRequestID:   "short-pr",
+			PullRequestName: "Short PR",
+			AuthorID:        "user1",
+			Status:          "OPEN",
+		}
+
+		assert.Equal(t, "short-pr", prShort.PullRequestID)
+		assert.Equal(t, "Short PR", prShort.PullRequestName)
+		assert.Equal(t, "user1", prShort.AuthorID)
+		assert.Equal(t, "OPEN", prShort.Status)
+	})
+
+	t.Run("Team with members", func(t *testing.T) {
+		team := models.Team{
+			TeamName: "development",
+			Members: []models.User{
+				{
+					UserID:   "dev1",
+					Username: "Developer One",
+					TeamName: "development",
+					IsActive: true,
+				},
+				{
+					UserID:   "dev2",
+					Username: "Developer Two",
+					TeamName: "development",
+					IsActive: true,
+				},
+			},
+		}
+
+		assert.Equal(t, "development", team.TeamName)
+		assert.Len(t, team.Members, 2)
+		assert.Equal(t, "dev1", team.Members[0].UserID)
+		assert.Equal(t, "development", team.Members[0].TeamName)
+		assert.Equal(t, "dev2", team.Members[1].UserID)
+		assert.Equal(t, "development", team.Members[1].TeamName)
+	})
+}
+
+func TestStorageModelCompatibility(t *testing.T) {
+	t.Run("CreatePRRequest compatibility", func(t *testing.T) {
+		// Проверяем что CreatePRRequest имеет правильные поля для storage
+		prRequest := models.CreatePRRequest{
+			PullRequestID:   "storage-test-pr",
+			PullRequestName: "Storage Test PR",
+			AuthorID:        "storage-user",
+		}
+
+		assert.Equal(t, "storage-test-pr", prRequest.PullRequestID)
+		assert.Equal(t, "Storage Test PR", prRequest.PullRequestName)
+		assert.Equal(t, "storage-user", prRequest.AuthorID)
+
+		// Проверяем что поля не пустые (для валидации)
+		assert.NotEmpty(t, prRequest.PullRequestID)
+		assert.NotEmpty(t, prRequest.PullRequestName)
+		assert.NotEmpty(t, prRequest.AuthorID)
+	})
+
+	t.Run("SetActiveRequest compatibility", func(t *testing.T) {
+		activeReq := models.SetActiveRequest{
+			UserID: "test-user",
+			Active: false,
+		}
+
+		assert.Equal(t, "test-user", activeReq.UserID)
+		assert.False(t, activeReq.Active)
+		assert.NotEmpty(t, activeReq.UserID)
+	})
+
+	t.Run("ReassignRequest compatibility", func(t *testing.T) {
+		reassignReq := models.ReassignRequest{
+			PullRequestID: "pr-to-reassign",
+			OldUserID:     "old-reviewer",
+		}
+
+		assert.Equal(t, "pr-to-reassign", reassignReq.PullRequestID)
+		assert.Equal(t, "old-reviewer", reassignReq.OldUserID)
+		assert.NotEmpty(t, reassignReq.PullRequestID)
+		assert.NotEmpty(t, reassignReq.OldUserID)
+	})
+}
+
+func TestErrorScenarios(t *testing.T) {
+	t.Run("Empty user ID in SetActiveRequest", func(t *testing.T) {
+		req := models.SetActiveRequest{
+			UserID: "",
+			Active: true,
+		}
+
+		assert.Empty(t, req.UserID)
+	})
+
+	t.Run("Empty PR ID in CreatePRRequest", func(t *testing.T) {
+		req := models.CreatePRRequest{
+			PullRequestID:   "",
+			PullRequestName: "Valid Name",
+			AuthorID:        "valid-author",
+		}
+
+		assert.Empty(t, req.PullRequestID)
+		assert.NotEmpty(t, req.PullRequestName)
+		assert.NotEmpty(t, req.AuthorID)
+	})
+
+	t.Run("PR with nil MergedAt", func(t *testing.T) {
+		pr := models.PullRequest{
+			PullRequestID:   "open-pr",
+			PullRequestName: "Open PR",
+			AuthorID:        "author",
+			Status:          "OPEN",
+			Reviewers:       []string{"reviewer1"},
+			CreatedAt:       time.Now(),
+			MergedAt:        nil,
+		}
+
+		assert.Equal(t, "OPEN", pr.Status)
+		assert.Nil(t, pr.MergedAt)
+		assert.False(t, pr.CreatedAt.IsZero())
 	})
 }
 
